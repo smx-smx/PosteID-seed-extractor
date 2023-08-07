@@ -5,6 +5,7 @@ from requests import Session
 from jwcrypto.jwk import JWK
 from jwcrypto.jwe import JWE
 from Crypto.PublicKey import RSA
+
 from datetime import datetime as Datetime, timedelta as Timedelta
 from pyotp import HOTP, TOTP
 from getpass import getpass
@@ -18,6 +19,25 @@ import sys
 import argparse
 import qrcode
 import logging
+import os
+import random
+from androguard.core.bytecodes import apk
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs7
+import requests
+import checkin_pb2
+import gzip
+import time
+
+
+'''
+references:
+    https://blog.vocabustudy.org/posts/decoding-the-firebase-remote-config-rest-api/
+    https://github.com/nborrmann/gcmreverse/
+    https://github.com/BRUHItsABunny/go-android-firebase
+    https://github.com/microg/GmsCore
+    https://github.com/MCMrARM/Google-Play-API
+'''
 
 
 # globals
@@ -25,6 +45,7 @@ OTP_PERIOD = 120
 OTP_DIGITS = 6
 
 USERPIN = "123456"
+APK_PATH = 'posteitaliane.posteapp.appposteid_4.5.441.apk'
 
     
 def jwe_bearer(content: str) -> dict:
@@ -50,6 +71,11 @@ def b64enc_str(content: bytes) -> str:
 def rand_uuid() -> str:
     # uuid version 4 generates a random uuid
     return str(uuid.uuid4())
+
+def rand_firebase_id() -> str:
+    bytes = bytearray(os.urandom(17))
+    bytes[0] = 0x70 + (bytes[0] % 0x10)
+    return base64.urlsafe_b64encode(bytes)[:22].decode('utf-8')
 
 def sha256b64enc(content: str) -> str:
     content_bytes = content.encode('utf-8')
@@ -80,12 +106,26 @@ def times() -> Union[int, int]:
 def new_auth_otp(otp_key: str) -> HOTP:
     return HOTP(otp_key, digits=8)
 
+def random_meid():
+    meid = "35503104"
+    for i in range(0, 6):
+        meid += str(random.randint(0, 9))
+    return meid
+
+def random_macaddr():
+    mac = "b407f9"
+    for i in range(0, 6):
+        mac += '{:x}'.format(random.randint(0, 15))
+    return mac
+
 
 class PosteID:
     APP_NAME = 'app-posteid-v3'
 
     def __init__(self) -> None:
         self.s = None
+        self.s_firebase = None
+        self.s_gcm = None
         self.app_register_id = None
         self.server_key = None
         self.pubkey = None
@@ -100,6 +140,27 @@ class PosteID:
         self.profile_token = None
         self.access_token = None
         self.token_expires_in = None
+
+        self.app_package = None
+        self.app_code_version = None
+        self.app_target_sdk = None
+        self.google_app_id = None
+        self.google_api_key = None
+        self.google_android_cert = None
+        self.google_sender_id = None
+        self.firebase_id = None
+        self.firebase_auth_token = None
+        self.firebase_refresh_token = None
+        self.firebase_token_expiry = None
+        self.gms_androidid = None
+        self.gms_security_token = None
+        self.gms_notification_token = None
+
+        self.username = None
+        self.password = None
+        self.sms_otp = None
+        self.sms_alt_token = None
+
 
 
     def jwe_header(self, app_id: str = None) -> dict:
@@ -183,7 +244,7 @@ class PosteID:
         assert r.status_code == 200, 'POST Request failed ({} != 200)'.format(r.status_code)
         return r
 
-    def http_preregistration(self) -> Union[str, JWK]:
+    def http_registration_init(self) -> Union[str, JWK]:
         url = 'https://appregistry-posteid.mobile.poste.it/jod-app-registry/v2/registerInit'
 
         registration_code, registration_code_hashed = rand_hashed_uuid()
@@ -354,6 +415,179 @@ class PosteID:
         assert resp["status"] == "v4_success", 'request failed ({}, {})'.format(resp["status"], resp["reason"])
         return resp
     
+    def http_google_installations(self):
+        url = 'https://firebaseinstallations.googleapis.com/v1/projects/app-posteid/installations'
+        data = {
+            'appId': self.google_app_id,
+            'authVersion': 'FIS_v2',
+            'fid': self.firebase_id,
+            'sdkVersion': 'a:16.3.4'
+        }
+        headers = {
+            'x-goog-api-key': self.google_api_key,
+            'X-Android-Package': self.app_package,
+            'X-Android-Cert': self.google_android_cert,
+        }
+        resp = self.s_firebase.post(url, headers=headers, json=data)
+        assert resp.status_code == 200, "firebase request failed: {}".format(resp.status_code)
+        return resp.json()
+    
+    def http_google_checkin(self):
+        url = 'https://android.clients.google.com/checkin'
+
+        req = checkin_pb2.CheckinRequest()
+        req.accountCookie.append("")
+        req.androidId = 0
+        req.checkin.build.bootloader = 'unknown'
+        req.checkin.build.brand = 'samsung'
+        req.checkin.build.clientId = 'android-google'
+        req.checkin.build.device = 'aosp'
+        req.checkin.build.fingerprint = 'google/android_x86_64/x86_64:7.1.2/N2G48C/N975FXXU1ASGO:/release-keys'
+        req.checkin.build.hardware = 'android_x86_64'
+        req.checkin.build.manufacturer = 'samsung'
+        req.checkin.build.model = 'SM-N971N'
+        req.checkin.build.otaInstalled = False
+        req.checkin.build.product = 'SM-N971N'
+        req.checkin.roaming = 'WIFI::'
+
+        #req.checkin.build.radio = 'unknown'
+        req.checkin.build.sdkVersion = 25
+        req.checkin.build.time = 1596634461
+        
+        #req.checkin.cellOperator = 'unknown'
+        
+        ev = checkin_pb2.CheckinRequest.Checkin.Event()
+        ev.tag = "event_log_start"
+        ev.timeMs = int(time.time()) * 1000
+        req.checkin.event.append(ev)
+        
+        req.checkin.lastCheckinMs = 0
+        req.checkin.userNumber = 0
+
+        req.deviceConfiguration.widthPixels = 1920
+        req.deviceConfiguration.heightPixels = 1080
+        req.deviceConfiguration.densityDpi = 240
+        req.deviceConfiguration.touchScreen = 3 # finger
+        req.deviceConfiguration.keyboardType = 2 # qwerty
+        req.deviceConfiguration.navigation = 1 # nonav
+        req.deviceConfiguration.screenLayout = 4 # xlarge
+        req.deviceConfiguration.hasHardKeyboard = False
+        req.deviceConfiguration.hasFiveWayNavigation = False
+        req.deviceConfiguration.glEsVersion = 0x30000
+        
+        for lib in [
+            "android.test.runner", "com.android.future.usb.accessory", "com.android.location.provider",
+            "com.google.android.gms", "javax.obex", "org.apache.http.legacy",
+        ]: req.deviceConfiguration.sharedLibrary.append(lib)
+
+        for plat in ["x86", "armeabi-x7a", "armeabi"]:
+            req.deviceConfiguration.nativePlatform.append(plat)
+
+        for locale in ['it', 'it_IT', 'en', 'en_US']:
+            req.deviceConfiguration.locale.append(locale)
+
+        for feature in [
+            "android.hardware.audio.output", "android.hardware.bluetooth",
+            "android.hardware.camera", "android.hardware.camera.any",
+            "android.hardware.camera.autofocus", "android.hardware.camera.flash",
+            "android.hardware.camera.front", "android.hardware.ethernet",
+            "android.hardware.faketouch", "android.hardware.location",
+            "android.hardware.location.gps", "android.hardware.location.network",
+            "android.hardware.microphone", "android.hardware.screen.landscape",
+            "android.hardware.screen.portrait", "android.hardware.sensor.accelerometer",
+            "android.hardware.sensor.compass", "android.hardware.sensor.gyroscope",
+            "android.hardware.sensor.light", "android.hardware.sensor.proximity",
+            "android.hardware.touchscreen", "android.hardware.touchscreen.multitouch",
+            "android.hardware.touchscreen.multitouch.distinct",
+            "android.hardware.touchscreen.multitouch.jazzhand",
+            "android.hardware.usb.accessory", "android.hardware.usb.host",
+            "android.hardware.wifi", "android.hardware.wifi.direct",
+            "android.software.app_widgets", "android.software.backup",
+            "android.software.connectionservice", "android.software.device_admin",
+            "android.software.input_methods", "android.software.live_wallpaper",
+            "android.software.managed_users", "android.software.print",
+            "android.software.sip", "android.software.sip.voip",
+            "android.software.voice_recognizers", "android.software.webview",
+            "com.google.android.feature.GOOGLE_BUILD",
+            "com.google.android.feature.GOOGLE_EXPERIENCE"
+        ]: req.deviceConfiguration.availableFeature.append(feature)
+
+        req.digest = '1-929a0dca0eee55513280171a8585da7dcd3700f8'
+        req.locale = 'it_IT'
+        req.macAddress.append(random_macaddr())
+        req.macAddressType.append('wifi')
+        req.otaCert.append('71Q6Rn2DDZl1zPDVaaeEHItd')
+        req.meid = random_meid()
+        
+        req.serial = '00d133b1'
+        req.timeZone = 'Europe/Rome'
+        req.version = 3
+        req.fragment = 0
+        req.userSerialNumber = 0
+        req.securityToken = 0
+        req.loggingId = random.randint(0,10000000)
+           
+        headers = {
+            'Content-Type': 'application/x-protobuffer',
+            'Content-Encoding': 'gzip',
+            'Accept-Encoding': 'gzip',
+            'User-Agent': 'Android-Checkin/2.0 (vbox86p JLS36G); gzip'
+        }
+
+        data = req.SerializeToString()
+        print(data)
+        compressed = gzip.compress(data)
+        resp = requests.post(url, headers=headers, data=compressed)
+        
+        data = checkin_pb2.CheckinResponse.FromString(resp.content)
+        return data
+
+    def http_google_registration(self):
+        gms_ver = '232518023'
+        url = 'https://android.apis.google.com/c2dm/register3'
+        data = {
+            'X-subtype': self.google_sender_id,
+            'sender': self.google_sender_id,
+            'X-app_ver': self.app_code_version,
+            'X-osv': '25',
+            'X-cliv': 'fiid-21.0.0',
+            'X-gmsv': gms_ver,
+            'X-appid': self.firebase_id,
+            'X-scope': '*',
+            'X-Goog-Firebase-Installations-Auth': self.firebase_auth_token,
+            'X-gmp_app_id': self.google_app_id,
+            #'X-firebase-app-name-hash': 'R1dAH9Ui7M-ynoznwBdw01tLxhI',
+            #'X-firebase-app-name-hash': base64.b64encode(
+            #    hashlib.sha1(self.app_package.encode()).digest()
+            #).decode('utf-8').rstrip('='),
+            'X-firebase-app-name-hash': 'R1dAH9Ui7M-ynoznwBdw01tLxhI',
+            # TODO: dynamic
+            'X-app_ver_name': '4.5.441',
+            'app': self.app_package,
+            'device': self.gms_androidid,
+            'app_ver': self.app_code_version,
+            'gcm_ver': gms_ver,
+            'plat': '0',
+            'cert': self.google_android_cert.lower(),
+            'target_ver': self.app_target_sdk
+        }
+        headers = {
+            'Authorization': f"AidLogin {self.gms_androidid}:{self.gms_security_token}",
+            'app': self.app_package,
+            'gcm_ver': gms_ver,
+            'app_ver': self.app_code_version,
+            'User-Agent': 'Android-GCM/1.5 (aosp N2G48C)',
+            'content-type': 'application/x-www-form-urlencoded',
+            'Accept-Encoding': 'gzip',
+        }
+
+        resp = requests.post(url, headers=headers, data=data)
+        assert resp.status_code == 200, "Request failed: {}".format(resp.status_code)
+        assert resp.text.startswith('token='), "Registration failed: {}".format(resp.text)
+        
+        (_, token) = resp.text.split('=')
+        return token
+        
 
     def http_send_sms(self, username: str):
         url = 'https://posteid.poste.it/jod-securelogin-schema/v4/xmobileauthjwt'
@@ -412,6 +646,21 @@ class PosteID:
         secret_app = response_content['data']['secretAPP']
 
         return app_register_id, secret_app
+    
+    def http_update_notification_token(self, notification_token):
+        url = 'https://appregistry-posteid.mobile.poste.it/jod-app-registry/v1/appregistry/updateNotificationToken'
+        body = {
+            'body': {
+                'notificationToken': notification_token
+            },
+            'header': {}
+        }
+        xkey = self.build_header_xkey()
+        resp = self.post(url, headers=xkey, json=body).json()
+
+        resp_header = resp['header']
+        resp_command_result = int(resp_header['command-result'])
+        assert resp_command_result == 0, "Command failed: {}".format(resp_command_result)
 
     
     def process_authorizations(self):
@@ -432,49 +681,147 @@ class PosteID:
             result = self.http_authorize_challenge_authorize(challenge=data)
             print(result)
             
+    def read_apk_file(self):
+        a = apk.APK(APK_PATH)
 
-    def initialize(self, from_saved = False):
+        signature = a.get_signature()
+        cert = pkcs7.load_der_pkcs7_certificates(signature)[0]
+        bytes = cert.public_bytes(encoding = serialization.Encoding.DER)
+        
+        cert = hashlib.sha1(bytes).digest().hex().upper()
+
+        self.app_code_version = a.get_androidversion_code()
+        self.app_target_sdk = a.get_target_sdk_version()
+
+        package = a.get_package()
+        rsrc = a.get_android_resources()
+        self.app_package = package
+        self.google_sender_id = rsrc.get_string(package, 'gcm_defaultSenderId')[1]
+        self.google_api_key = rsrc.get_string(package, 'google_api_key')[1]
+        self.google_app_id = rsrc.get_string(package, 'google_app_id')[1]
+        self.google_android_cert = cert        
+
+    def initialize(self, hot_login = False):
+        cold_login = not hot_login
+
         self.s = Session()
+        self.s_firebase = Session()
+        self.s_gcm = Session()
+
+        self.read_session()
+
+        if not self.google_api_key:
+            self.read_apk_file()
+
         self.s.headers.update({
             'User-Agent': 'okhttp/3.12.1'
         })
-        
-        if from_saved:
-            self.read_session()
-        else:
-            self.app_pubkey, self.app_privkey = generate_pairs()
+        self.s_firebase.headers.update({
+            'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 7.1.2; SM-N971N Build/N2G48C)',
+            'X-Android-Package': self.app_package,
+            'X-Android-Cert': self.google_android_cert,
+            'x-goog-api-key': self.google_api_key
+        })
+        self.s_gcm.headers.update({
+            'User-Agent': 'Android-GCM/1.5 (aosp N2G48C)',
+        })
+
+        if self.gms_androidid is None:
+            self.firebase_id = rand_firebase_id()
+
+            # obtain gms device id and security token
+            data = self.http_google_checkin()
+            self.gms_androidid = data.androidId
+            self.gms_security_token = data.securityToken
             
-            registration_code, self.server_key = self.http_preregistration()
+            # obtain firebase tokens
+            token_data = self.http_google_installations()
+            self.firebase_id = token_data['fid']
+            # name = token_data['name']
+            auth_token = token_data['authToken']
+            self.firebase_auth_token = auth_token['token']
+            self.firebase_token_expiry = auth_token['expiresIn']
+            self.firebase_refresh_token = token_data['refreshToken']
+       
+        if cold_login:
+            # register with google
+            self.gms_notification_token = self.http_google_registration()
+            self.app_pubkey, self.app_privkey = generate_pairs()
+            registration_code, self.server_key = self.http_registration_init()
+            self.otp_counter = 0
             self.app_id, self.otp_generator = self.http_registration(registration_code)
             self.app_id_hashed = sha256b64enc(self.app_id)
+        
+
+        has_creds = self.username is not None and self.password is not None
+
+        if cold_login:
             self.http_app_activation()
-            self.http_get_config()
-            self.http_appcheck_1()
 
-        self.http_appcheck_2()
+        self.http_update_notification_token(self.gms_notification_token)
+        self.http_get_config()
+        self.http_appcheck_1()
 
-        token = self.http_v5_handshake()
-        self.profile_token = token['profile_token']
-        self.access_token = token['access_token']
-        self.token_expires_in = token['expires_in']
+        if hot_login:
+            self.http_appcheck_2()
+
+        if has_creds:
+            self.http_login(self.username, self.password)
+
+        if self.app_secret is not None and hot_login:
+            token = self.http_v5_handshake()
+            self.profile_token = token['profile_token']
+            self.access_token = token['access_token']
+            self.token_expires_in = token['expires_in']
+
+        if hot_login:
+            self.write_session()
 
     def read_session(self):
         with open('secret.json', 'r') as f:
             session = json.loads(f.read())
-            self.app_id = session['app_id']
-            self.app_id_hashed = sha256b64enc(self.app_id)
-            self.app_register_id = session['app_register_id']
-            self.app_secret = session['app_secret']
+            self.app_id = session.get('app_id')
+            if self.app_id is not None:
+                self.app_id_hashed = sha256b64enc(self.app_id)
+            
+            self.app_register_id = session.get('app_register_id')
+            self.app_secret = session.get('app_secret')
+    
+            server_key = session.get('server_key')
+            if server_key is not None:
+                self.server_key = JWK.from_json(server_key)
+            
+            app_privkey = session.get('app_privkey')
+            if app_privkey is not None:
+                self.app_privkey = JWK.from_json(app_privkey)
+                self.app_pubkey = RSA.import_key(self.app_privkey.export_to_pem(False, None)).export_key(format='DER')
+            
+            self.otp_counter = session.get('otp_counter')
+            otp_secret = session.get('otp_secret')
+            if otp_secret is not None:
+                self.otp_generator = new_auth_otp(otp_secret)
 
-            self.server_key = JWK.from_json(session['server_key'])
-            self.app_privkey = JWK.from_json(session['app_privkey'])
-            self.app_pubkey = RSA.import_key(self.app_privkey.export_to_pem(False, None)).export_key(format='DER')
-            self.otp_counter = session['otp_counter']
-            self.otp_generator = new_auth_otp(session['otp_secret'])
+            self.token_expires_in = session.get('token_expires_in')
+            self.access_token = session.get('access_token')
+            self.profile_token = session.get('profile_token')
 
-            self.token_expires_in = session['token_expires_in']
-            self.access_token = session['access_token']
-            self.profile_token = session['profile_token']
+            self.app_package = session.get('app_package')
+            self.app_code_version = session.get('app_code_version')
+            self.app_target_sdk = session.get('app_target_sdk')
+            self.google_app_id = session.get('google_app_id')
+            self.google_api_key = session.get('google_api_key')
+            self.google_android_cert = session.get('google_android_cert')
+            self.google_sender_id = session.get('google_sender_id')
+            self.gms_androidid = session.get('gms_androidid')
+            self.gms_security_token = session.get('gms_security_token')
+
+            self.firebase_id = session.get('firebase_id')
+            self.gms_notification_token = session.get('gms_notification_token')
+
+            self.username = session.get('username')
+            self.password = session.get('password')
+            self.sms_otp = session.get('sms_otp')
+            self.sms_alt_token = session.get('sms_alt_token')
 
     def write_session(self):
         with open('secret.json', 'w') as f:
@@ -487,27 +834,41 @@ class PosteID:
                 'app_secret': self.app_secret,
                 'otp_secret': self.otp_generator.secret,
                 'otp_counter': self.otp_counter,
+                # creds
+                'username': self.username,
+                'password': self.password,
+                'sms_otp': self.sms_otp,
+                'sms_alt_token': self.sms_alt_token,
                 # v5 handshake
                 'access_token': self.access_token,
                 'profile_token': self.profile_token,
-                'token_expires_in': self.token_expires_in
+                'token_expires_in': self.token_expires_in,
+                # gms
+                'app_package': self.app_package,
+                'app_code_version': self.app_code_version,
+                'app_target_sdk': self.app_target_sdk,
+                'google_app_id': self.google_app_id,
+                'google_api_key': self.google_api_key,
+                'google_android_cert': self.google_android_cert,
+                'google_sender_id': self.google_sender_id,
+                'gms_androidid': self.gms_androidid,
+                'gms_security_token': self.gms_security_token,
+                'gms_notification_token': self.gms_notification_token
             }, indent=4))
 
     def register_app(self):
         # ask login info
-        username = input('Type username: ')
-        password = getpass('Type password: ')
-        self.http_login(username, password)
-        del password
+        self.username = input('Type username: ')
+        self.password = getpass('Type password: ')
+        self.http_login(self.username, self.password)
 
         # handle sms
-        self.http_send_sms(username)
-        sms_otp = input('Type SMS otp: ')
-        sms_alt_token = self.http_submit_sms(sms_otp)
-        del sms_otp
+        self.http_send_sms(self.username)
+        self.sms_otp = input('Type SMS otp: ')
+        self.sms_alt_token = self.http_submit_sms(self.sms_otp)
 
         userpin = USERPIN
-        self.app_register_id, self.app_secret = self.http_register_app(sms_alt_token, userpin)
+        self.app_register_id, self.app_secret = self.http_register_app(self.sms_alt_token, userpin)
 
     def extract_cmd(self, only_output: bool, show_string: bool):
         self.register_app()
@@ -557,13 +918,6 @@ def jwe_otp(when: int, otp: str) -> dict:
         'type': 'HMAC-SHA1'
     }
     return otp_dict
-
-def next_otp(generator: HOTP) -> Union[int, str]:
-    global otp_counter
-    otp_counter += 1
-
-    return otp_counter, generator.at(otp_counter)
-
 
 def build_useless_header_app() -> dict:
     result = {'header': {'clientid': None, 'requestid': None}, 'body': {}}
@@ -635,7 +989,12 @@ def main():
     args = parser.parse_args()
 
     lib = PosteID()
-    lib.initialize(True)
+
+    use_saved_data = True
+    if args.option == 'extract':
+        use_saved_data = False
+
+    lib.initialize(hot_login=use_saved_data)
 
     if args.option == 'extract':
         lib.extract_cmd(args.only_output, args.show_string)

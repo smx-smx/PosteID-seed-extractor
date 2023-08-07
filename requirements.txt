@@ -1,3 +1,4 @@
+androguard>=3.3.5
 certifi>=2021.10.8
 cffi>=1.15.0
 charset-normalizer>=2.0.12
@@ -12,3 +13,4 @@ qrcode>=7.3.1
 requests>=2.27.1
 urllib3>=1.26.8
 wrapt>=1.13.3
+cryptography>=41.0.0
