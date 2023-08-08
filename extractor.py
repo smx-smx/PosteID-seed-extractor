@@ -812,11 +812,15 @@ class PosteID:
             self.google_api_key = session.get('google_api_key')
             self.google_android_cert = session.get('google_android_cert')
             self.google_sender_id = session.get('google_sender_id')
+
             self.gms_androidid = session.get('gms_androidid')
             self.gms_security_token = session.get('gms_security_token')
+            self.gms_notification_token = session.get('gms_notification_token')
 
             self.firebase_id = session.get('firebase_id')
-            self.gms_notification_token = session.get('gms_notification_token')
+            self.firebase_auth_token = session.get('firebase_auth_token')
+            self.firebase_refresh_token = session.get('firebase_refresh_token')
+            self.firebase_token_expiry = session.get('firebase_token_expiry')
 
             self.username = session.get('username')
             self.password = session.get('password')
@@ -853,7 +857,12 @@ class PosteID:
                 'google_sender_id': self.google_sender_id,
                 'gms_androidid': self.gms_androidid,
                 'gms_security_token': self.gms_security_token,
-                'gms_notification_token': self.gms_notification_token
+                'gms_notification_token': self.gms_notification_token,
+                # firebase
+                'firebase_id': self.firebase_id,
+                'firebase_auth_token': self.firebase_auth_token,
+                'firebase_refresh_token': self.firebase_refresh_token,
+                'firebase_token_expiry': self.firebase_token_expiry
             }, indent=4))
 
     def register_app(self):
