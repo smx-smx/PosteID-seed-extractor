@@ -28,7 +28,7 @@ import requests
 import checkin_pb2
 import gzip
 import time
-
+import traceback
 
 '''
 references:
@@ -299,7 +299,7 @@ class PosteID:
         body = self.build_useless_header_app()
         self.post(url, headers=xkey, json=body)
 
-    def http_appcheck_2(self):
+    def http_check_register_app(self):
         url = 'https://sh2-web-posteid.poste.it/jod-secure-holder2-web/public/app/v1/checkRegisterApp'
 
         header = self.jwe_header(self.app_id)
@@ -535,7 +535,6 @@ class PosteID:
         }
 
         data = req.SerializeToString()
-        print(data)
         compressed = gzip.compress(data)
         resp = requests.post(url, headers=headers, data=compressed)
         
@@ -726,9 +725,13 @@ class PosteID:
             'User-Agent': 'Android-GCM/1.5 (aosp N2G48C)',
         })
 
-        if self.gms_androidid is None:
+        # generate firebase ID
+        if self.firebase_id is None:
             self.firebase_id = rand_firebase_id()
 
+        if self.gms_androidid is None or \
+        self.gms_security_token is None or \
+        self.firebase_auth_token is None or cold_login:
             # obtain gms device id and security token
             data = self.http_google_checkin()
             self.gms_androidid = data.androidId
@@ -742,40 +745,31 @@ class PosteID:
             self.firebase_auth_token = auth_token['token']
             self.firebase_token_expiry = auth_token['expiresIn']
             self.firebase_refresh_token = token_data['refreshToken']
-       
-        if cold_login:
-            # register with google
+
             self.gms_notification_token = self.http_google_registration()
+
+        if self.app_pubkey is None or self.app_privkey is None:
             self.app_pubkey, self.app_privkey = generate_pairs()
+
+        if self.server_key is None or self.otp_generator is None:
             registration_code, self.server_key = self.http_registration_init()
-            self.otp_counter = 0
             self.app_id, self.otp_generator = self.http_registration(registration_code)
             self.app_id_hashed = sha256b64enc(self.app_id)
-        
-
-        has_creds = self.username is not None and self.password is not None
-
-        if cold_login:
             self.http_app_activation()
 
-        self.http_update_notification_token(self.gms_notification_token)
         self.http_get_config()
+        self.http_update_notification_token(self.gms_notification_token)
         self.http_appcheck_1()
+        self.http_check_register_app()
 
-        if hot_login:
-            self.http_appcheck_2()
-
-        if has_creds:
-            self.http_login(self.username, self.password)
-
+       
         if self.app_secret is not None and hot_login:
             token = self.http_v5_handshake()
             self.profile_token = token['profile_token']
             self.access_token = token['access_token']
             self.token_expires_in = token['expires_in']
 
-        if hot_login:
-            self.write_session()
+        self.write_session()
 
     def read_session(self):
         with open('secret.json', 'r') as f:
@@ -879,7 +873,7 @@ class PosteID:
         userpin = USERPIN
         self.app_register_id, self.app_secret = self.http_register_app(self.sms_alt_token, userpin)
 
-    def extract_cmd(self, only_output: bool, show_string: bool):
+    def setup_cmd(self, only_output: bool, show_string: bool):
         self.register_app()
 
         # write output
@@ -976,13 +970,14 @@ def main():
     option_parser = parser.add_subparsers(title='option', dest='option', required=True, 
                                           description='Action to be performed')
 
-    # extract command 
-    extract = option_parser.add_parser('extract', help='Extract OTP code')
-    extract.add_argument('-o', '--only-output', action='store_true',
+    # setup command 
+    setup = option_parser.add_parser('setup', help='Login and extract OTP code')
+    setup.add_argument('-o', '--only-output', action='store_true',
                          help='Only show the output on the screen (do not write output in the secret.txt file)')
-    extract.add_argument('-s', '--show-string', action='store_true',
+    setup.add_argument('-s', '--show-string', action='store_true',
                          help='Print OTP seed as string instead of qr code')
     
+
     authorize = option_parser.add_parser('authorize', help='Authorize pending SPID requests')
 
     # generate qr
@@ -1000,13 +995,24 @@ def main():
     lib = PosteID()
 
     use_saved_data = True
-    if args.option == 'extract':
+    if args.option == 'setup':
         use_saved_data = False
 
-    lib.initialize(hot_login=use_saved_data)
+    login_expired = False
 
-    if args.option == 'extract':
-        lib.extract_cmd(args.only_output, args.show_string)
+    try:
+        lib.initialize(hot_login=use_saved_data)
+    except AssertionError:
+        traceback.print_exc()
+        if use_saved_data:
+            login_expired = True
+
+    if login_expired:
+        print("-- session expired, performing cold login")
+        lib.initialize(hot_login=False)
+
+    if args.option == 'setup':
+        lib.setup_cmd(args.only_output, args.show_string)
     elif args.option == 'generate_qr':
         lib.generate_qr_cmd(args.seed)
     elif args.option == 'generate_code':
