@@ -7,6 +7,7 @@ import time
 import os
 import pickle
 from getpass import getpass
+from extractor import PosteID
 
 DEBUG_DUMP = False
 SESSION_FILE = 'session.dat'
@@ -41,6 +42,19 @@ def debug_dump(file:str, data: str):
 	file_path = os.path.join('debug', file)
 	with open(file_path, 'w', encoding='utf-8') as f:
 		f.write(data)
+
+def spid_authorize():
+	print('-- Trying to authorize pending tickets')
+	lib = PosteID()
+
+	try:
+		lib.initialize(hot_login=True)
+	except AssertionError:
+		print("-- session expired, performing cold login")
+		lib.initialize(hot_login=False)
+
+	lib.process_authorizations()
+	print(' -- SUCCESS --')
 
 def main():
 	s = requests.Session()
@@ -112,6 +126,8 @@ def main():
 	resp = s.get("https://posteid.poste.it/jod-login-schema/secureholder/generatepush?_=" + str(int(time.time())))
 	assert resp.status_code == 200, "request failed"
 	debug_dump('debug_generatepush.json', resp.text)
+
+	spid_authorize()
 
 	'''
 	Wait for authorization from app
