@@ -214,6 +214,7 @@ def main():
 		'Origin': 'https://auth.poliziadistato.it'
 	}
 	resp = s.post(action, headers=headers, data=jwt_data)
+	assert resp.status_code == 200, "request failed"
 	debug_dump('dump_result.html', resp.text)
 
 	save_session(s)
