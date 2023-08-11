@@ -60,25 +60,26 @@ def main():
 
 	debug_dump('debug_loginaction.html', resp.text)
 
-	root = ET.fromstring(resp.text)
+	if len(resp.history) < 1 or not "posteid.poste.it" in resp.history.pop().url:
+		root = ET.fromstring(resp.text)
 
-	'''
-	extract IDPs list from script
-	'''
-	for script in root.xpath("//script"):
-		code = script.text
-		if code is None: continue
-		if "var idps" not in code: continue
-		match = re.search(r'var idps\s*=\s*(\[.*\]);', code)
-		if match is None: continue
-		idps_json = match.group(1)
-		idps = json.loads(idps_json)
-		break
+		'''
+		extract IDPs list from script
+		'''
+		for script in root.xpath("//script"):
+			code = script.text
+			if code is None: continue
+			if "var idps" not in code: continue
+			match = re.search(r'var idps\s*=\s*(\[.*\]);', code)
+			if match is None: continue
+			idps_json = match.group(1)
+			idps = json.loads(idps_json)
+			break
 
-	# get IDP URL
-	poste_idp = list(filter(lambda x: "posteid.poste.it" in x['entity_id'], idps)).pop()	
-	resp = s.get(poste_idp['url'])
-	assert resp.status_code == 200, "request failed"
+		# get IDP URL
+		poste_idp = list(filter(lambda x: "posteid.poste.it" in x['entity_id'], idps)).pop()
+		resp = s.get(poste_idp['url'])
+		assert resp.status_code == 200, "request failed"
 	
 	secrets = read_credentials()
 	if secrets is not None:
@@ -182,6 +183,22 @@ def main():
 	}
 	resp = s.post(action, data=saml_data)
 	debug_dump('debug_result.html', resp.text)
+
+	'''
+	Send JWT
+	'''
+	root = ET.fromstring(resp.text)
+	action = root.xpath("//form")[0].get('action')
+	jwt = root.xpath("//input[@name='jwt']")[0].get('value')
+	jwt_data = {
+		'jwt': jwt
+	}
+	headers = {
+		'Referer': 'https://auth.poliziadistato.it/',
+		'Origin': 'https://auth.poliziadistato.it'
+	}
+	resp = s.post(action, headers=headers, data=jwt_data)
+	debug_dump('dump_result.html', resp.text)
 
 	save_session(s)
 		
