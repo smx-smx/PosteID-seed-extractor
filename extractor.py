@@ -163,14 +163,15 @@ class PosteID:
 
 
 
-    def jwe_header(self, app_id: str = None) -> dict:
+    def jwe_header(self) -> dict:
         header = {
             "alg": "RSA-OAEP-256",
             "enc": "A256CBC-HS512",
             "typ": "JWT",
-            "cty": "JWE",
-            "kid": app_id if app_id != None else self.server_key.thumbprint(),
+            "cty": "JWE"
         }
+        if self.app_id is not None:
+            header['kid'] = self.app_id
 
         return header
     
@@ -206,12 +207,12 @@ class PosteID:
         return content
 
 
-    def jwe_encode(self, header: dict, content: dict) -> str:
+    def jwe_encode(self, content: dict) -> str:
         # convert content
         content_json = json.dumps(content)
         content_bytes = content_json.encode('utf-8')
 
-        # build_jwe
+        header = self.jwe_header()
         jwe = JWE(protected=header, plaintext=content_bytes, recipient=self.server_key)
         serialized = jwe.serialize(True)
         return serialized
@@ -267,7 +268,7 @@ class PosteID:
         }
 
         content = self.jwe_content('register', data)
-        jwe = self.jwe_encode(self.jwe_header(), content)
+        jwe = self.jwe_encode(content)
 
         r = self.post(url, data=jwe)
         response = self.jwe_decode(r.text)
@@ -280,7 +281,7 @@ class PosteID:
     def http_app_activation(self):
         url = 'https://appregistry-posteid.mobile.poste.it/jod-app-registry/v2/activation'
         content = self.jwe_content('register')
-        jwe = self.jwe_encode(self.jwe_header(self.app_id), content)
+        jwe = self.jwe_encode(content)
         self.post(url, data=jwe)
 
     def build_useless_header_app(self) -> dict:
@@ -302,49 +303,45 @@ class PosteID:
     def http_check_register_app(self):
         url = 'https://sh2-web-posteid.poste.it/jod-secure-holder2-web/public/app/v1/checkRegisterApp'
 
-        header = self.jwe_header(self.app_id)
         data = {
             'appRegisterID': self.app_register_id 
         }
         content = self.jwe_content('checkRegisterApp', data)
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
 
         self.post(url, data=jwe)
 
     def http_login(self, username: str, password: str):
         url = 'https://posteid.poste.it/jod-securelogin-schema/v4/xmobileauthjwt'
 
-        header = self.jwe_header(self.app_id)
         data = {
             'authLevel': '0',
             'userid': username,
             'password': password
         }
         content = self.jwe_content('login', data=data)
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
         
         self.get(url, headers=jwe_bearer(jwe))
 
     def http_get_login_challenge(self):
         url = 'https://posteid.poste.it/jod-securelogin-schema/native/v5/challenge'
 
-        header = self.jwe_header(self.app_id)
         data = {}
         content = self.jwe_content('login', data=data)
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
 
         return self.get(url, data=jwe).json()
     
     def http_get_authorize_challenge(self, transaction):
         url = 'https://posteid.poste.it/jod-login-schema/secureholder/v4/challenge'
 
-        header = self.jwe_header(self.app_id)
         data = {
             'jti': transaction['jti'],
             'appRegisterID': self.app_register_id
         }
         content = self.jwe_content('login', data=data)
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
         return self.post(url, data=jwe).json()
 
     def http_authorize_challenge_authorize(self, challenge):
@@ -369,8 +366,7 @@ class PosteID:
 
         content = self.jwe_content('login', data=data)
         
-        header = self.jwe_header(self.app_id)
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
         return self.post(url, data=jwe).json()
 
     def http_login_challenge_authorize(self, challenge):
@@ -396,8 +392,7 @@ class PosteID:
 
         content = self.jwe_content('login', data=data)
         
-        header = self.jwe_header(self.app_id)
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
         return self.post(url, data=jwe).json()
 
     def http_v5_handshake(self):
@@ -408,9 +403,8 @@ class PosteID:
     def http_list_authorizations(self):
         url = 'https://posteid.poste.it/jod-securelogin-schema/native/v5/list-transaction'
 
-        header = self.jwe_header(self.app_id)
         content = self.jwe_content('login', data={})        
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
         resp = self.post(url, headers=jwe_bearer(self.access_token), data=jwe).json()
         assert resp["status"] == "v4_success", 'request failed ({}, {})'.format(resp["status"], resp["reason"])
         return resp
@@ -592,7 +586,6 @@ class PosteID:
         url = 'https://posteid.poste.it/jod-securelogin-schema/v4/xmobileauthjwt'
 
         # build jwe
-        header = self.jwe_header(self.app_id)
         data = {
             'authLevel': '3',
             'userid': username, 
@@ -600,7 +593,7 @@ class PosteID:
         }
         content = self.jwe_content('login', data=data)
         
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
 
         # make http request
         self.get(url, headers=jwe_bearer(jwe))
@@ -608,14 +601,13 @@ class PosteID:
     def http_submit_sms(self, sms_otp: str) -> str:
         url = 'https://posteid.poste.it/jod-securelogin-schema/v4/xmobileauthjwt'
 
-        header = self.jwe_header(self.app_id)
         data = {
             'authLevel': '2',
             'otp': sms_otp,
             'nonce': rand_uuid()
         }
         content = self.jwe_content('login', data=data)
-        jwe  = self.jwe_encode(header, content)
+        jwe  = self.jwe_encode(content)
     
         r = self.get(url, headers=jwe_bearer(jwe))
 
@@ -627,14 +619,13 @@ class PosteID:
         url = 'https://sh2-web-posteid.poste.it/jod-secure-holder2-web/public/app/v1/registerApp'
 
         # build jwe
-        header = self.jwe_header(self.app_id)
         data = {
             'idpAccessToken': '',
             'registerToken': sms_alt_token,
             'userPIN': poste_pin
         }
         content = self.jwe_content('registerApp', data=data)
-        jwe = self.jwe_encode(header, content)
+        jwe = self.jwe_encode(content)
 
         response_encoded = self.post(url, data=jwe).json()
 
