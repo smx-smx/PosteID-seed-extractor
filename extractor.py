@@ -204,6 +204,7 @@ class PosteID:
         if self.app_id_hashed is not None:
             content['kid-sha256'] = self.app_id_hashed
 
+
         return content
 
 
@@ -781,7 +782,7 @@ class PosteID:
                 self.app_privkey = JWK.from_json(app_privkey)
                 self.app_pubkey = RSA.import_key(self.app_privkey.export_to_pem(False, None)).export_key(format='DER')
             
-            self.otp_counter = session.get('otp_counter')
+            self.otp_counter = session.get('otp_counter', 0)
             otp_secret = session.get('otp_secret')
             if otp_secret is not None:
                 self.otp_generator = new_auth_otp(otp_secret)
