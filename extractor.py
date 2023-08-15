@@ -142,7 +142,8 @@ class PosteID:
         self.token_expires_in = None
 
         self.app_package = None
-        self.app_code_version = None
+        self.app_version_name = None
+        self.app_version_code = None
         self.app_target_sdk = None
         self.google_app_id = None
         self.google_api_key = None
@@ -542,7 +543,7 @@ class PosteID:
         data = {
             'X-subtype': self.google_sender_id,
             'sender': self.google_sender_id,
-            'X-app_ver': self.app_code_version,
+            'X-app_ver': self.app_version_code,
             'X-osv': '25',
             'X-cliv': 'fiid-21.0.0',
             'X-gmsv': gms_ver,
@@ -555,11 +556,10 @@ class PosteID:
             #    hashlib.sha1(self.app_package.encode()).digest()
             #).decode('utf-8').rstrip('='),
             'X-firebase-app-name-hash': 'R1dAH9Ui7M-ynoznwBdw01tLxhI',
-            # TODO: dynamic
-            'X-app_ver_name': '4.5.441',
+            'X-app_ver_name': self.app_version_name,
             'app': self.app_package,
             'device': self.gms_androidid,
-            'app_ver': self.app_code_version,
+            'app_ver': self.app_version_code,
             'gcm_ver': gms_ver,
             'plat': '0',
             'cert': self.google_android_cert.lower(),
@@ -569,7 +569,7 @@ class PosteID:
             'Authorization': f"AidLogin {self.gms_androidid}:{self.gms_security_token}",
             'app': self.app_package,
             'gcm_ver': gms_ver,
-            'app_ver': self.app_code_version,
+            'app_ver': self.app_version_code,
             'User-Agent': 'Android-GCM/1.5 (aosp N2G48C)',
             'content-type': 'application/x-www-form-urlencoded',
             'Accept-Encoding': 'gzip',
@@ -681,7 +681,8 @@ class PosteID:
         
         cert = hashlib.sha1(bytes).digest().hex().upper()
 
-        self.app_code_version = a.get_androidversion_code()
+        self.app_version_name = a.get_androidversion_name()
+        self.app_version_code = a.get_androidversion_code()
         self.app_target_sdk = a.get_target_sdk_version()
 
         package = a.get_package()
@@ -696,12 +697,21 @@ class PosteID:
         cold_login = not hot_login
 
         self.s = Session()
+
         self.s_firebase = Session()
         self.s_gcm = Session()
 
-        self.read_session()
+        extra_data = self.read_session()
 
-        if not self.google_api_key:
+        # set an optional proxy address (e.g. mitmproxy) for debugging
+        proxy = extra_data.get('proxy', None)
+        proxy_enable = extra_data.get('proxy_enable', proxy is not None)
+        if proxy is not None and proxy_enable:
+            self.s.proxies = {kind: proxy for kind in ("http", "https", "ftp")}
+            self.s.verify = False
+
+
+        if not self.google_api_key or not self.app_version_name:
             self.read_apk_file()
 
         self.s.headers.update({
@@ -792,7 +802,8 @@ class PosteID:
             self.profile_token = session.get('profile_token')
 
             self.app_package = session.get('app_package')
-            self.app_code_version = session.get('app_code_version')
+            self.app_version_name = session.get('app_version_name')
+            self.app_version_code = session.get('app_version_code')
             self.app_target_sdk = session.get('app_target_sdk')
             self.google_app_id = session.get('google_app_id')
             self.google_api_key = session.get('google_api_key')
@@ -812,6 +823,7 @@ class PosteID:
             self.password = session.get('password')
             self.sms_otp = session.get('sms_otp')
             self.sms_alt_token = session.get('sms_alt_token')
+            return session
 
     def write_session(self):
         with open('secret.json', 'w') as f:
@@ -835,7 +847,8 @@ class PosteID:
                 'token_expires_in': self.token_expires_in,
                 # gms
                 'app_package': self.app_package,
-                'app_code_version': self.app_code_version,
+                'app_version_code': self.app_version_code,
+                'app_version_name': self.app_version_name,
                 'app_target_sdk': self.app_target_sdk,
                 'google_app_id': self.google_app_id,
                 'google_api_key': self.google_api_key,
